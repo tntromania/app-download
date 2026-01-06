@@ -2,13 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
-const { exec } = require('child_process');
-const { promisify } = require('util');
-const fs = require('fs');
-const path = require('path');
-
-const execPromise = promisify(exec);
+const { Innertube } = require('youtubei.js');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -16,50 +10,30 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 
-const TEMP_DIR = path.join(__dirname, 'temp');
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
+let youtube;
+
+// Inițializează YouTube client
+async function initYouTube() {
+  try {
+    youtube = await Innertube.create();
+    console.log('✅ YouTube client inițializat');
+  } catch (error) {
+    console.error('❌ Eroare inițializare YouTube:', error);
+  }
 }
 
-setInterval(() => {
-  fs.readdir(TEMP_DIR, (err, files) => {
-    if (err) return;
-    files.forEach(file => {
-      const filePath = path.join(TEMP_DIR, file);
-      fs.stat(filePath, (err, stats) => {
-        if (err) return;
-        const now = Date.now();
-        const fileAge = now - stats.mtimeMs;
-        if (fileAge > 3600000) {
-          fs.unlink(filePath, () => {});
-        }
-      });
-    });
-  });
-}, 600000);
+initYouTube();
 
 function extractVideoId(url) {
   const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/);
   return match ? match[1] : null;
 }
 
-function cleanTranscriptXML(xmlData) {
-  if (!xmlData) return '';
-  if (!xmlData.includes('<text')) return xmlData;
-  return xmlData
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .trim();
-}
-
 app.get('/healthz', (req, res) => {
   res.json({ ok: true, message: 'YouTube Downloader Online' });
 });
 
-// VIDEO INFO - cu transcript
+// VIDEO INFO - cu YouTube.js (FĂRĂ API extern!)
 app.post('/api/yt-download', async (req, res) => {
   const { url } = req.body;
   console.log('[SmartDownloader] Procesez URL:', url);
@@ -70,31 +44,21 @@ app.post('/api/yt-download', async (req, res) => {
   if (!videoId) return res.status(400).json({ success: false, error: 'Link invalid' });
 
   try {
-    const response = await axios.get('https://youtube-media-downloader.p.rapidapi.com/v2/video/details', {
-      params: { videoId: videoId },
-      headers: {
-        'x-rapidapi-key': '7efb2ec2c9msh9064cf9c42d6232p172418jsn9da8ae5664d3',
-        'x-rapidapi-host': 'youtube-media-downloader.p.rapidapi.com'
-      },
-      timeout: 12000
-    });
+    const info = await youtube.getInfo(videoId);
+    
+    // Extragem formatele disponibile
+    const formats = info.streaming_data.formats || [];
+    const adaptiveFormats = info.streaming_data.adaptive_formats || [];
+    const allFormats = [...formats, ...adaptiveFormats];
 
-    const data = response.data;
-    if (!data || !data.videos) throw new Error('API-ul nu a returnat date.');
+    let validFormats = allFormats
+      .filter(f => f.mime_type?.includes('video/mp4') && f.height)
+      .map(f => ({
+        qualityLabel: `${f.height}p`,
+        resolution: f.height
+      }));
 
-    const allVideos = data.videos.items;
-    let validFormats = allVideos
-      .filter(v => v.extension === 'mp4')
-      .map(v => {
-        const resMatch = v.quality?.match(/(\d+)p?/);
-        const resolution = resMatch ? parseInt(resMatch[1]) : 0;
-        return {
-          qualityLabel: v.quality || `${resolution}p`,
-          resolution: resolution
-        };
-      })
-      .filter(v => v.resolution > 0);
-
+    // Eliminăm duplicate
     const uniqueFormats = [];
     const seenResolutions = new Set();
     for (const format of validFormats) {
@@ -105,47 +69,50 @@ app.post('/api/yt-download', async (req, res) => {
     }
     uniqueFormats.sort((a, b) => b.resolution - a.resolution);
 
-    if (uniqueFormats.length === 0) throw new Error('Nu am găsit formate video valide.');
-
-    // TRANSCRIPT - înapoi!
-    let transcriptText = null;
-    if (data.subtitles && data.subtitles.items && data.subtitles.items.length > 0) {
-      const subs = data.subtitles.items;
-      const targetSub = subs.find(s => s.code === 'ro' || (s.name && s.name.toLowerCase().includes('romanian'))) ||
-        subs.find(s => s.code === 'en' || (s.name && s.name.toLowerCase().includes('english'))) ||
-        subs[0];
-
-      if (targetSub && targetSub.url) {
-        try {
-          const subRes = await axios.get(targetSub.url, { timeout: 5000 });
-          transcriptText = cleanTranscriptXML(subRes.data);
-        } catch (err) {
-          console.log('[Warning] Nu s-a putut descărca transcriptul.');
-        }
-      }
+    if (uniqueFormats.length === 0) {
+      uniqueFormats.push(
+        { qualityLabel: '1080p', resolution: 1080 },
+        { qualityLabel: '720p', resolution: 720 },
+        { qualityLabel: '480p', resolution: 480 },
+        { qualityLabel: '360p', resolution: 360 }
+      );
     }
+
+    // Transcript
+    let transcriptText = null;
+    try {
+      const transcript = await info.getTranscript();
+      if (transcript && transcript.transcript) {
+        transcriptText = transcript.transcript.content.body.initial_segments
+          .map(segment => segment.snippet.text)
+          .join(' ');
+      }
+    } catch (err) {
+      console.log('[Warning] Nu s-a putut descărca transcriptul.');
+    }
+
+    const thumbnail = info.basic_info.thumbnail?.[0]?.url || 
+                     `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
     res.json({
       success: true,
       videoId: videoId,
       videoUrl: url,
-      title: data.title || 'YouTube Video',
-      thumbnail: data.thumbnails ? data.thumbnails[data.thumbnails.length - 1].url : '',
-      duration: data.lengthSeconds ? new Date(data.lengthSeconds * 1000).toISOString().substr(14, 5) : '',
+      title: info.basic_info.title || 'YouTube Video',
+      thumbnail: thumbnail,
+      duration: info.basic_info.duration ? 
+        new Date(info.basic_info.duration * 1000).toISOString().substr(14, 5) : '',
       formats: uniqueFormats,
       transcript: transcriptText
     });
 
   } catch (error) {
     console.error('[Eroare Server]:', error.message);
-    if (error.response && error.response.status === 429) {
-      return res.status(429).json({ success: false, error: 'Limita zilnică RapidAPI atinsă.' });
-    }
     res.status(500).json({ success: false, error: 'Eroare procesare video.' });
   }
 });
 
-// DOWNLOAD VIDEO - folosește Cobalt.tools pentru download real
+// DOWNLOAD VIDEO - direct cu YouTube.js
 app.get('/api/download-video', async (req, res) => {
   const { url, quality, title } = req.query;
 
@@ -159,38 +126,38 @@ app.get('/api/download-video', async (req, res) => {
   console.log(`[Download Start] ${safeTitle} - ${quality}p`);
 
   try {
-    // Folosim Cobalt API pentru download
-    const cobaltResponse = await axios.post('https://api.cobalt.tools/api/json', {
-      url: url,
-      vCodec: "h264",
-      vQuality: quality || "1080",
-      aFormat: "best",
-      filenamePattern: "basic",
-      isAudioOnly: false
-    }, {
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      },
-      timeout: 30000
-    });
+    const info = await youtube.getInfo(videoId);
+    const qualityNum = parseInt(quality) || 720;
 
-    const downloadUrl = cobaltResponse.data.url;
+    // Găsim formatul cel mai apropiat de calitatea cerută
+    const formats = [...(info.streaming_data.formats || []), ...(info.streaming_data.adaptive_formats || [])];
+    
+    let bestFormat = formats
+      .filter(f => f.mime_type?.includes('video/mp4') && f.height && f.has_audio)
+      .sort((a, b) => Math.abs(a.height - qualityNum) - Math.abs(b.height - qualityNum))[0];
 
-    if (!downloadUrl) {
-      throw new Error('Nu s-a putut obține URL-ul de download.');
+    if (!bestFormat) {
+      bestFormat = formats.find(f => f.mime_type?.includes('video/mp4'));
     }
 
-    // Stream video-ul de la Cobalt către client
+    if (!bestFormat || !bestFormat.url) {
+      throw new Error('Nu s-a găsit format valid pentru download.');
+    }
+
+    // Stream direct către client
+    const axios = require('axios');
     const videoStream = await axios({
       method: 'get',
-      url: downloadUrl,
+      url: bestFormat.url,
       responseType: 'stream',
       timeout: 120000
     });
 
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp4"`);
     res.setHeader('Content-Type', 'video/mp4');
+    if (bestFormat.content_length) {
+      res.setHeader('Content-Length', bestFormat.content_length);
+    }
 
     videoStream.data.pipe(res);
 
