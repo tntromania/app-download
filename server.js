@@ -329,77 +329,83 @@ app.post('/api/translate', async (req, res) => {
 // ============================================
 // DOWNLOAD VIDEO - FIX PENTRU SHORTS
 // ============================================
-app.get('/api/download-video', async (req, res) => {
+// ============================================
+// GET DIRECT DOWNLOAD LINK
+// ============================================
+app.get('/api/get-download-link', async (req, res) => {
     try {
         const { url, quality, title } = req.query;
         
         if (!url) {
-            return res.status(400).json({ error: 'URL lipsă' });
+            return res.status(400).json({ 
+                success: false, 
+                error: 'URL lipsă' 
+            });
         }
         
-        console.log('📥 Download:', url, 'Quality:', quality);
+        console.log('🔗 Getting direct link for:', url, 'Quality:', quality);
+        
+        // Verifică dacă este un YouTube Shorts
+        const isShorts = url.includes('/shorts/');
         
         let command = 'yt-dlp ';
-        
         if (fs.existsSync(COOKIES_FILE)) {
             command += `--cookies "${COOKIES_FILE}" `;
         }
         
-        command += '--extractor-args "youtube:player_client=mweb" ';
-        command += '--sleep-interval 5 ';
         command += '--no-warnings ';
         
-        // ============================================
-        // FIX FORMAT SELECTOR PENTRU SHORTS
-        // ============================================
+        // Pentru Shorts, folosește extractor args
+        if (isShorts) {
+            command += '--extractor-args "youtube:player_client=mweb" ';
+        }
+        
+        // Construiește filtrul de calitate
         const qualityNum = quality || 720;
         
-        // Varianta SIMPLĂ - funcționează 100%
-        command += `-f "best[height<=${qualityNum}]" `;
-        
-        // Sau varianta SAFE - încearcă mai multe opțiuni
-        // command += `-f "bv*[height<=${qualityNum}]+ba/b[height<=${qualityNum}]/bv*+ba/b/best" `;
-        
-        command += '--merge-output-format mp4 ';
-        // ============================================
-        
-        const outputDir = path.join(__dirname, 'downloads');
-        if (!fs.existsSync(outputDir)) {
-            fs.mkdirSync(outputDir, { recursive: true });
+        if (isShorts) {
+            // Pentru Shorts, folosește filtru mai permisiv
+            command += `-f "best[height<=${qualityNum}]/best" `;
+        } else {
+            command += `-f "bestvideo[height<=${qualityNum}]+bestaudio/best[height<=${qualityNum}]/best" `;
         }
         
-        const filename = `${Date.now()}.mp4`;
-        const outputPath = path.join(outputDir, filename);
-        command += `-o "${outputPath}" `;
+        command += '--get-url ';
         command += `"${url}"`;
         
-        console.log('⚡ Download command:', command);
+        console.log('⚡ Command:', command);
         
-        await execPromise(command, {
-            maxBuffer: 1024 * 1024 * 100,
-            timeout: 300000
+        const { stdout, stderr } = await execPromise(command, { 
+            maxBuffer: 1024 * 1024 * 10,
+            timeout: 30000
         });
         
-        if (!fs.existsSync(outputPath)) {
-            throw new Error('Fișierul nu a fost creat');
+        if (stderr && stderr.includes('ERROR')) {
+            console.error('❌ yt-dlp error:', stderr);
+            throw new Error(stderr.split('\n')[0]);
         }
         
-        console.log('✅ Download complete!');
+        const directUrl = stdout.trim();
         
-        const downloadName = `${title || 'video'}.mp4`;
-        res.download(outputPath, downloadName, (err) => {
-            if (err) console.error('Download error:', err);
-            try {
-                fs.unlinkSync(outputPath);
-                console.log('🗑️ Cleanup done');
-            } catch (e) {
-                console.error('Cleanup error:', e);
-            }
+        if (!directUrl) {
+            throw new Error('Nu s-a găsit link direct');
+        }
+        
+        console.log('✅ Direct URL obtained:', directUrl.substring(0, 100) + '...');
+        
+        res.json({
+            success: true,
+            directUrl: directUrl,
+            filename: `${title || 'video'}.mp4`,
+            quality: `${quality || 720}p`
         });
         
     } catch (error) {
-        console.error('❌ Download error:', error.message);
-        res.status(500).json({ error: error.message });
+        console.error('❌ Direct link error:', error.message);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
     }
 });
 
