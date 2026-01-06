@@ -16,7 +16,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Instalează dependințe npm
-RUN npm ci --only=production
+RUN npm install --production
 
 # Copiază tot codul (inclusiv cookies!)
 COPY . .
