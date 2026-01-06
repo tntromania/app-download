@@ -15,7 +15,9 @@ app.use(cors({
         'https://smartcreator.ro',
         'https://www.smartcreator.ro',
         'http://localhost:3000',
-        'http://localhost:5500'
+        'http://localhost:5500',
+        'http://127.0.0.1:5500',
+        'http://localhost:8080'
     ],
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type']
@@ -107,6 +109,17 @@ app.post('/api/yt-download', async (req, res) => {
         
         console.log('✅ Formats found:', formats.length);
         
+        // Încearcă să obțină transcript-ul
+        let transcript = null;
+        try {
+            const videoId = videoInfo.id || url.match(/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/)?.[1];
+            if (videoId) {
+                transcript = await getTranscript(videoId);
+            }
+        } catch (transcriptError) {
+            console.log('⚠️ Transcript not available:', transcriptError.message);
+        }
+        
         res.json({
             success: true,
             title: videoInfo.title || 'Video',
@@ -114,7 +127,7 @@ app.post('/api/yt-download', async (req, res) => {
             duration: videoInfo.duration_string || 'N/A',
             formats: formats,
             videoUrl: url,
-            transcript: null
+            transcript: transcript
         });
         
     } catch (error) {
@@ -132,6 +145,183 @@ app.post('/api/yt-download', async (req, res) => {
             ],
             videoUrl: req.body.url,
             transcript: null
+        });
+    }
+});
+
+// ============================================
+// GET TRANSCRIPT
+// ============================================
+async function getTranscript(videoId) {
+    try {
+        let command = 'yt-dlp ';
+        
+        if (fs.existsSync(COOKIES_FILE)) {
+            command += `--cookies "${COOKIES_FILE}" `;
+        }
+        
+        command += '--skip-download ';
+        command += '--write-auto-sub ';
+        command += '--sub-lang en ';
+        command += '--sub-format vtt ';
+        command += '--convert-subs srt ';
+        command += '--no-warnings ';
+        
+        const outputDir = path.join(__dirname, 'temp');
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+        
+        const outputPath = path.join(outputDir, `${videoId}.%(ext)s`);
+        command += `-o "${outputPath}" `;
+        command += `"https://www.youtube.com/watch?v=${videoId}"`;
+        
+        console.log('📝 Getting transcript:', command);
+        
+        await execPromise(command, {
+            maxBuffer: 1024 * 1024 * 5,
+            timeout: 30000
+        });
+        
+        // Caută fișierul SRT generat
+        const srtFiles = fs.readdirSync(outputDir).filter(f => 
+            f.startsWith(videoId) && f.endsWith('.srt')
+        );
+        
+        if (srtFiles.length > 0) {
+            const srtPath = path.join(outputDir, srtFiles[0]);
+            const srtContent = fs.readFileSync(srtPath, 'utf-8');
+            
+            // Parsează SRT și extrage doar textul
+            const transcript = srtContent
+                .replace(/\d+\r?\n/g, '') // Elimină numerele de secvență
+                .replace(/\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\r?\n/g, '') // Elimină timestamp-urile
+                .replace(/\r?\n\r?\n/g, ' ') // Înlocuiește dublu newline cu spațiu
+                .replace(/\r?\n/g, ' ') // Înlocuiește newline cu spațiu
+                .replace(/\s+/g, ' ') // Normalizează spațiile
+                .trim();
+            
+            // Cleanup
+            try {
+                fs.unlinkSync(srtPath);
+                const vttFiles = fs.readdirSync(outputDir).filter(f => 
+                    f.startsWith(videoId) && f.endsWith('.vtt')
+                );
+                vttFiles.forEach(f => {
+                    try {
+                        fs.unlinkSync(path.join(outputDir, f));
+                    } catch (e) {}
+                });
+            } catch (e) {}
+            
+            return transcript || null;
+        }
+        
+        return null;
+    } catch (error) {
+        console.error('❌ Transcript error:', error.message);
+        return null;
+    }
+}
+
+app.get('/api/yt-transcript', async (req, res) => {
+    try {
+        const { videoId } = req.query;
+        
+        if (!videoId) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Video ID lipsă' 
+            });
+        }
+        
+        console.log('📝 Getting transcript for:', videoId);
+        
+        const transcript = await getTranscript(videoId);
+        
+        if (transcript) {
+            res.json({
+                success: true,
+                transcript: transcript
+            });
+        } else {
+            res.json({
+                success: false,
+                transcript: null
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Transcript error:', error.message);
+        res.json({
+            success: false,
+            transcript: null
+        });
+    }
+});
+
+// ============================================
+// TRANSLATE TEXT
+// ============================================
+app.post('/api/translate', async (req, res) => {
+    try {
+        const { text, from, to } = req.body;
+        
+        if (!text) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Text lipsă' 
+            });
+        }
+        
+        console.log('🌐 Translating:', text.substring(0, 50) + '...');
+        
+        // Încearcă LibreTranslate (gratuit și mai bun)
+        try {
+            const libreResponse = await fetch('https://libretranslate.com/translate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    q: text.substring(0, 5000), // Limitează la 5000 caractere
+                    source: from || 'en',
+                    target: to || 'ro',
+                    format: 'text'
+                })
+            });
+            
+            const libreData = await libreResponse.json();
+            if (libreData.translatedText) {
+                return res.json({
+                    success: true,
+                    translatedText: libreData.translatedText
+                });
+            }
+        } catch (libreError) {
+            console.log('⚠️ LibreTranslate failed, trying MyMemory...');
+        }
+        
+        // Fallback: MyMemory
+        const textEncoded = encodeURIComponent(text.substring(0, 500));
+        const myMemoryResponse = await fetch(
+            `https://api.mymemory.translated.net/get?q=${textEncoded}&langpair=${from || 'en'}|${to || 'ro'}`
+        );
+        
+        const myMemoryData = await myMemoryResponse.json();
+        
+        if (myMemoryData.responseData && myMemoryData.responseData.translatedText) {
+            res.json({
+                success: true,
+                translatedText: myMemoryData.responseData.translatedText
+            });
+        } else {
+            throw new Error('Traducerea a eșuat');
+        }
+        
+    } catch (error) {
+        console.error('❌ Translation error:', error.message);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
         });
     }
 });
