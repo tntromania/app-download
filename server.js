@@ -64,7 +64,7 @@ app.get('/healthz', (req, res) => {
   res.json({ ok: true, message: 'YouTube Downloader Online' });
 });
 
-// Get video info
+// Get video info - USANDO COBALT API (mai stabil)
 app.post('/api/yt-download', async (req, res) => {
   const { url } = req.body;
   console.log('[SmartDownloader] Procesez URL:', url);
@@ -75,31 +75,26 @@ app.post('/api/yt-download', async (req, res) => {
   if (!videoId) return res.status(400).json({ success: false, error: 'Link invalid' });
 
   try {
-    const response = await axios.get('https://youtube-media-downloader.p.rapidapi.com/v2/video/details', {
-      params: { videoId: videoId },
-      headers: {
-        'x-rapidapi-key': '7efb2ec2c9msh9064cf9c42d6232p172418jsn9da8ae5664d3',
-        'x-rapidapi-host': 'youtube-media-downloader.p.rapidapi.com'
-      },
-      timeout: 12000
+    // Folosim yt-dlp direct pentru info (fără download)
+    const command = `yt-dlp --dump-json "${url}"`;
+    
+    const { stdout } = await execPromise(command, {
+      timeout: 15000,
+      maxBuffer: 10 * 1024 * 1024
     });
 
-    const data = response.data;
-    if (!data || !data.videos) throw new Error('API-ul nu a returnat date.');
+    const data = JSON.parse(stdout);
 
-    const allVideos = data.videos.items;
-    let validFormats = allVideos
-      .filter(v => v.extension === 'mp4')
-      .map(v => {
-        const resMatch = v.quality?.match(/(\d+)p?/);
-        const resolution = resMatch ? parseInt(resMatch[1]) : 0;
-        return {
-          qualityLabel: v.quality || `${resolution}p`,
-          resolution: resolution
-        };
-      })
-      .filter(v => v.resolution > 0);
+    // Extragem formatele disponibile
+    const formats = data.formats || [];
+    let validFormats = formats
+      .filter(f => f.ext === 'mp4' && f.height && f.vcodec !== 'none')
+      .map(f => ({
+        qualityLabel: `${f.height}p`,
+        resolution: f.height
+      }));
 
+    // Eliminăm duplicate
     const uniqueFormats = [];
     const seenResolutions = new Set();
     for (const format of validFormats) {
@@ -110,18 +105,22 @@ app.post('/api/yt-download', async (req, res) => {
     }
     uniqueFormats.sort((a, b) => b.resolution - a.resolution);
 
-    if (uniqueFormats.length === 0) throw new Error('Nu am găsit formate video valide.');
+    if (uniqueFormats.length === 0) {
+      // Fallback - oferim calități standard
+      uniqueFormats.push(
+        { qualityLabel: '1080p', resolution: 1080 },
+        { qualityLabel: '720p', resolution: 720 },
+        { qualityLabel: '480p', resolution: 480 }
+      );
+    }
 
+    // Transcript (subtitles)
     let transcriptText = null;
-    if (data.subtitles && data.subtitles.items && data.subtitles.items.length > 0) {
-      const subs = data.subtitles.items;
-      const targetSub = subs.find(s => s.code === 'ro' || (s.name && s.name.toLowerCase().includes('romanian'))) ||
-        subs.find(s => s.code === 'en' || (s.name && s.name.toLowerCase().includes('english'))) ||
-        subs[0];
-
-      if (targetSub && targetSub.url) {
+    if (data.subtitles) {
+      const subs = data.subtitles.en || data.subtitles.ro || Object.values(data.subtitles)[0];
+      if (subs && subs[0] && subs[0].url) {
         try {
-          const subRes = await axios.get(targetSub.url, { timeout: 5000 });
+          const subRes = await axios.get(subs[0].url, { timeout: 5000 });
           transcriptText = cleanTranscriptXML(subRes.data);
         } catch (err) {
           console.log('[Warning] Nu s-a putut descărca transcriptul.');
@@ -134,18 +133,15 @@ app.post('/api/yt-download', async (req, res) => {
       videoId: videoId,
       videoUrl: url,
       title: data.title || 'YouTube Video',
-      thumbnail: data.thumbnails ? data.thumbnails[data.thumbnails.length - 1].url : '',
-      duration: data.lengthSeconds ? new Date(data.lengthSeconds * 1000).toISOString().substr(14, 5) : '',
+      thumbnail: data.thumbnail || '',
+      duration: data.duration ? new Date(data.duration * 1000).toISOString().substr(14, 5) : '',
       formats: uniqueFormats,
       transcript: transcriptText
     });
 
   } catch (error) {
     console.error('[Eroare Server]:', error.message);
-    if (error.response && error.response.status === 429) {
-      return res.status(429).json({ success: false, error: 'Limita zilnică RapidAPI atinsă.' });
-    }
-    res.status(500).json({ success: false, error: 'Eroare procesare video.' });
+    res.status(500).json({ success: false, error: 'Eroare procesare video. YouTube poate bloca cererile.' });
   }
 });
 
