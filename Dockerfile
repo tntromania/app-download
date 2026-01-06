@@ -3,13 +3,13 @@ FROM node:18-slim
 # Instalează yt-dlp și dependențele necesare
 RUN apt-get update && apt-get install -y \
     python3 \
-    python3-pip \
     ffmpeg \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalează yt-dlp
-RUN pip3 install --no-cache-dir yt-dlp
+# Instalează yt-dlp direct de la GitHub (metodă recomandată oficial)
+RUN wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp
 
 # Creează directorul de lucru
 WORKDIR /app
