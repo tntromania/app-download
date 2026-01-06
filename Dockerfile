@@ -1,20 +1,31 @@
-FROM node:18-slim
+FROM node:18-alpine
 
-# Instalează yt-dlp și dependențele necesare
-RUN apt-get update && apt-get install -y \
+# Instalează dependințe sistem
+RUN apk add --no-cache \
     python3 \
-    python3-pip \
-    ffmpeg \
-    && pip3 install --break-system-packages yt-dlp \
-    && apt-get clean
+    py3-pip \
+    ffmpeg
 
+# Instalează yt-dlp
+RUN pip3 install --no-cache-dir --break-system-packages yt-dlp
+
+# Workdir
 WORKDIR /app
 
+# Copiază package files
 COPY package*.json ./
-RUN npm install
 
+# Instalează dependințe npm
+RUN npm ci --only=production
+
+# Copiază tot codul (inclusiv cookies!)
 COPY . .
 
-EXPOSE 10000
+# IMPORTANT: Verifică că youtube_cookies.txt există
+RUN ls -la /app/youtube_cookies.txt || echo "WARNING: youtube_cookies.txt not found!"
 
+# Expune portul
+EXPOSE 3000
+
+# Start
 CMD ["node", "server.js"]
