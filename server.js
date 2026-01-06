@@ -47,18 +47,13 @@ if (fs.existsSync(COOKIES_FILE)) {
 app.post('/api/yt-download', async (req, res) => {
     try {
         const { url } = req.body;
-        
         if (!url) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'URL lipsă' 
-            });
+            return res.status(400).json({ success: false, error: 'URL lipsă' });
         }
-        
+
         console.log('📥 Getting info for:', url);
         
         let command = 'yt-dlp ';
-        
         if (fs.existsSync(COOKIES_FILE)) {
             command += `--cookies "${COOKIES_FILE}" `;
         }
@@ -67,23 +62,16 @@ app.post('/api/yt-download', async (req, res) => {
         command += '--no-warnings ';
         command += '--skip-download ';
         command += `"${url}"`;
-        
+
         console.log('⚡ Command:', command);
-        
-        const { stdout } = await execPromise(command, {
-            maxBuffer: 1024 * 1024 * 10
-        });
-        
+        const { stdout } = await execPromise(command, { maxBuffer: 1024 * 1024 * 10 });
         const videoInfo = JSON.parse(stdout);
-        
+
         let formats = [];
-        
         if (videoInfo.formats && videoInfo.formats.length > 0) {
             formats = videoInfo.formats
                 .filter(f => {
-                    return f.vcodec && f.vcodec !== 'none' && 
-                           f.ext === 'mp4' &&
-                           f.height;
+                    return f.vcodec && f.vcodec !== 'none' && f.ext === 'mp4' && f.height;
                 })
                 .map(f => ({
                     formatId: f.format_id,
@@ -97,7 +85,7 @@ app.post('/api/yt-download', async (req, res) => {
                 )
                 .sort((a, b) => b.resolution - a.resolution);
         }
-        
+
         if (formats.length === 0) {
             formats = [
                 { formatId: 'best', qualityLabel: '1080p', resolution: 1080, ext: 'mp4' },
@@ -106,9 +94,9 @@ app.post('/api/yt-download', async (req, res) => {
                 { formatId: 'best', qualityLabel: '360p', resolution: 360, ext: 'mp4' }
             ];
         }
-        
+
         console.log('✅ Formats found:', formats.length);
-        
+
         // Încearcă să obțină transcript-ul
         let transcript = null;
         try {
@@ -119,7 +107,7 @@ app.post('/api/yt-download', async (req, res) => {
         } catch (transcriptError) {
             console.log('⚠️ Transcript not available:', transcriptError.message);
         }
-        
+
         res.json({
             success: true,
             title: videoInfo.title || 'Video',
@@ -129,10 +117,9 @@ app.post('/api/yt-download', async (req, res) => {
             videoUrl: url,
             transcript: transcript
         });
-        
+
     } catch (error) {
         console.error('❌ Error:', error.message);
-        
         res.json({
             success: true,
             title: 'YouTube Video',
@@ -155,7 +142,6 @@ app.post('/api/yt-download', async (req, res) => {
 async function getTranscript(videoId) {
     try {
         let command = 'yt-dlp ';
-        
         if (fs.existsSync(COOKIES_FILE)) {
             command += `--cookies "${COOKIES_FILE}" `;
         }
@@ -166,7 +152,7 @@ async function getTranscript(videoId) {
         command += '--sub-format vtt ';
         command += '--convert-subs srt ';
         command += '--no-warnings ';
-        
+
         const outputDir = path.join(__dirname, 'temp');
         if (!fs.existsSync(outputDir)) {
             fs.mkdirSync(outputDir, { recursive: true });
@@ -175,19 +161,15 @@ async function getTranscript(videoId) {
         const outputPath = path.join(outputDir, `${videoId}.%(ext)s`);
         command += `-o "${outputPath}" `;
         command += `"https://www.youtube.com/watch?v=${videoId}"`;
-        
+
         console.log('📝 Getting transcript:', command);
-        
-        await execPromise(command, {
-            maxBuffer: 1024 * 1024 * 5,
-            timeout: 30000
-        });
-        
+        await execPromise(command, { maxBuffer: 1024 * 1024 * 5, timeout: 30000 });
+
         // Caută fișierul SRT generat
         const srtFiles = fs.readdirSync(outputDir).filter(f => 
             f.startsWith(videoId) && f.endsWith('.srt')
         );
-        
+
         if (srtFiles.length > 0) {
             const srtPath = path.join(outputDir, srtFiles[0]);
             const srtContent = fs.readFileSync(srtPath, 'utf-8');
@@ -200,7 +182,7 @@ async function getTranscript(videoId) {
                 .replace(/\r?\n/g, ' ') // Înlocuiește newline cu spațiu
                 .replace(/\s+/g, ' ') // Normalizează spațiile
                 .trim();
-            
+
             // Cleanup
             try {
                 fs.unlinkSync(srtPath);
@@ -208,15 +190,12 @@ async function getTranscript(videoId) {
                     f.startsWith(videoId) && f.endsWith('.vtt')
                 );
                 vttFiles.forEach(f => {
-                    try {
-                        fs.unlinkSync(path.join(outputDir, f));
-                    } catch (e) {}
+                    try { fs.unlinkSync(path.join(outputDir, f)); } catch (e) {}
                 });
             } catch (e) {}
-            
+
             return transcript || null;
         }
-        
         return null;
     } catch (error) {
         console.error('❌ Transcript error:', error.message);
@@ -227,110 +206,26 @@ async function getTranscript(videoId) {
 app.get('/api/yt-transcript', async (req, res) => {
     try {
         const { videoId } = req.query;
-        
         if (!videoId) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Video ID lipsă' 
-            });
+            return res.status(400).json({ success: false, error: 'Video ID lipsă' });
         }
-        
+
         console.log('📝 Getting transcript for:', videoId);
-        
         const transcript = await getTranscript(videoId);
-        
+
         if (transcript) {
-            res.json({
-                success: true,
-                transcript: transcript
-            });
+            res.json({ success: true, transcript: transcript });
         } else {
-            res.json({
-                success: false,
-                transcript: null
-            });
+            res.json({ success: false, transcript: null });
         }
-        
     } catch (error) {
         console.error('❌ Transcript error:', error.message);
-        res.json({
-            success: false,
-            transcript: null
-        });
+        res.json({ success: false, transcript: null });
     }
 });
 
 // ============================================
-// TRANSLATE TEXT
-// ============================================
-app.post('/api/translate', async (req, res) => {
-    try {
-        const { text, from, to } = req.body;
-        
-        if (!text) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Text lipsă' 
-            });
-        }
-        
-        console.log('🌐 Translating:', text.substring(0, 50) + '...');
-        
-        // Încearcă LibreTranslate (gratuit și mai bun)
-        try {
-            const libreResponse = await fetch('https://libretranslate.com/translate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    q: text.substring(0, 5000), // Limitează la 5000 caractere
-                    source: from || 'en',
-                    target: to || 'ro',
-                    format: 'text'
-                })
-            });
-            
-            const libreData = await libreResponse.json();
-            if (libreData.translatedText) {
-                return res.json({
-                    success: true,
-                    translatedText: libreData.translatedText
-                });
-            }
-        } catch (libreError) {
-            console.log('⚠️ LibreTranslate failed, trying MyMemory...');
-        }
-        
-        // Fallback: MyMemory
-        const textEncoded = encodeURIComponent(text.substring(0, 500));
-        const myMemoryResponse = await fetch(
-            `https://api.mymemory.translated.net/get?q=${textEncoded}&langpair=${from || 'en'}|${to || 'ro'}`
-        );
-        
-        const myMemoryData = await myMemoryResponse.json();
-        
-        if (myMemoryData.responseData && myMemoryData.responseData.translatedText) {
-            res.json({
-                success: true,
-                translatedText: myMemoryData.responseData.translatedText
-            });
-        } else {
-            throw new Error('Traducerea a eșuat');
-        }
-        
-    } catch (error) {
-        console.error('❌ Translation error:', error.message);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
-        });
-    }
-});
-
-// ============================================
-// DOWNLOAD VIDEO - FIX PENTRU SHORTS
-// ============================================
-// ============================================
-// GET DIRECT DOWNLOAD LINK
+// GET DIRECT DOWNLOAD LINK (NOU)
 // ============================================
 app.get('/api/get-download-link', async (req, res) => {
     try {
@@ -358,17 +253,14 @@ app.get('/api/get-download-link', async (req, res) => {
         // Pentru Shorts, folosește extractor args
         if (isShorts) {
             command += '--extractor-args "youtube:player_client=mweb" ';
+            command += '--throttled-rate 100K ';
         }
         
         // Construiește filtrul de calitate
         const qualityNum = quality || 720;
         
-        if (isShorts) {
-            // Pentru Shorts, folosește filtru mai permisiv
-            command += `-f "best[height<=${qualityNum}]/best" `;
-        } else {
-            command += `-f "bestvideo[height<=${qualityNum}]+bestaudio/best[height<=${qualityNum}]/best" `;
-        }
+        // Varianta 1: Simplă și eficientă pentru majoritatea videoclipurilor
+        command += `-f "best[height<=${qualityNum}]/best" `;
         
         command += '--get-url ';
         command += `"${url}"`;
@@ -377,12 +269,47 @@ app.get('/api/get-download-link', async (req, res) => {
         
         const { stdout, stderr } = await execPromise(command, { 
             maxBuffer: 1024 * 1024 * 10,
-            timeout: 30000
+            timeout: 60000 // 60 secunde timeout
         });
         
         if (stderr && stderr.includes('ERROR')) {
             console.error('❌ yt-dlp error:', stderr);
-            throw new Error(stderr.split('\n')[0]);
+            
+            // Încearcă o a doua metodă dacă prima a eșuat
+            console.log('🔄 Încerc metodă alternativă...');
+            let altCommand = 'yt-dlp ';
+            if (fs.existsSync(COOKIES_FILE)) {
+                altCommand += `--cookies "${COOKIES_FILE}" `;
+            }
+            altCommand += '--no-warnings ';
+            altCommand += '-f "best" ';
+            altCommand += '--get-url ';
+            altCommand += `"${url}"`;
+            
+            const { stdout: altStdout, stderr: altStderr } = await execPromise(altCommand, { 
+                maxBuffer: 1024 * 1024 * 10,
+                timeout: 60000
+            });
+            
+            if (altStderr && altStderr.includes('ERROR')) {
+                throw new Error(altStderr.split('\n')[0]);
+            }
+            
+            const directUrl = altStdout.trim();
+            
+            if (!directUrl) {
+                throw new Error('Nu s-a găsit link direct');
+            }
+            
+            console.log('✅ Direct URL obtained (alternative method)');
+            
+            return res.json({
+                success: true,
+                directUrl: directUrl,
+                filename: `${title || 'video'}.mp4`,
+                quality: `${quality || 'best'}p`,
+                note: 'Calitate optimă automată'
+            });
         }
         
         const directUrl = stdout.trim();
@@ -409,17 +336,99 @@ app.get('/api/get-download-link', async (req, res) => {
     }
 });
 
-// Health
+// ============================================
+// TRANSLATE TEXT
+// ============================================
+app.post('/api/translate', async (req, res) => {
+    try {
+        const { text, from, to } = req.body;
+        if (!text) {
+            return res.status(400).json({ success: false, error: 'Text lipsă' });
+        }
+
+        console.log('🌐 Translating:', text.substring(0, 50) + '...');
+
+        // Încearcă LibreTranslate (gratuit și mai bun)
+        try {
+            const libreResponse = await fetch('https://libretranslate.com/translate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    q: text.substring(0, 5000), // Limitează la 5000 caractere
+                    source: from || 'en',
+                    target: to || 'ro',
+                    format: 'text'
+                })
+            });
+            
+            const libreData = await libreResponse.json();
+            if (libreData.translatedText) {
+                return res.json({ 
+                    success: true, 
+                    translatedText: libreData.translatedText 
+                });
+            }
+        } catch (libreError) {
+            console.log('⚠️ LibreTranslate failed, trying MyMemory...');
+        }
+
+        // Fallback: MyMemory
+        const textEncoded = encodeURIComponent(text.substring(0, 500));
+        const myMemoryResponse = await fetch(
+            `https://api.mymemory.translated.net/get?q=${textEncoded}&langpair=${from || 'en'}|${to || 'ro'}`
+        );
+        const myMemoryData = await myMemoryResponse.json();
+        
+        if (myMemoryData.responseData && myMemoryData.responseData.translatedText) {
+            res.json({ 
+                success: true, 
+                translatedText: myMemoryData.responseData.translatedText 
+            });
+        } else {
+            throw new Error('Traducerea a eșuat');
+        }
+    } catch (error) {
+        console.error('❌ Translation error:', error.message);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+// ============================================
+// HEALTH CHECK
+// ============================================
 app.get('/health', (req, res) => {
     res.json({ 
-        status: 'ok',
+        status: 'ok', 
         timestamp: new Date().toISOString(),
-        cookies: fs.existsSync(COOKIES_FILE)
+        cookies: fs.existsSync(COOKIES_FILE),
+        endpoints: [
+            '/api/yt-download',
+            '/api/yt-transcript',
+            '/api/get-download-link',
+            '/api/translate',
+            '/health'
+        ]
     });
 });
 
-// Start
+// ============================================
+// SERVE STATIC FILES (pentru testare)
+// ============================================
+app.use(express.static('public'));
+
+// ============================================
+// START SERVER
+// ============================================
 app.listen(PORT, () => {
-    console.log('🚀 Server on port', PORT);
-    console.log('📁 Cookies:', fs.existsSync(COOKIES_FILE) ? '✅' : '❌');
+    console.log('🚀 Server running on port', PORT);
+    console.log('📁 Cookies available:', fs.existsSync(COOKIES_FILE) ? '✅' : '❌');
+    console.log('📡 Available endpoints:');
+    console.log('  POST /api/yt-download');
+    console.log('  GET  /api/yt-transcript');
+    console.log('  GET  /api/get-download-link');
+    console.log('  POST /api/translate');
+    console.log('  GET  /health');
 });
