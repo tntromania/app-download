@@ -1,6 +1,22 @@
-/* =========================================
-   🔻 YOUTUBE DOWNLOADER - YT-DLP VERSION 🔻
-   ========================================= */
+// server.js
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const fs = require('fs');
+const path = require('path');
+
+const execPromise = promisify(exec);
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// CORS
+app.use(cors());
+app.use(express.json());
+
 // Directory pentru fișiere temporare
 const TEMP_DIR = path.join(__dirname, 'temp');
 if (!fs.existsSync(TEMP_DIR)) {
@@ -17,16 +33,15 @@ setInterval(() => {
         if (err) return;
         const now = Date.now();
         const fileAge = now - stats.mtimeMs;
-        if (fileAge > 3600000) { // 1 oră
+        if (fileAge > 3600000) {
           fs.unlink(filePath, () => {});
         }
       });
     });
   });
-}, 600000); // Check la fiecare 10 minute
+}, 600000);
 
-// ===== HELPER FUNCTIONS =====
-
+// Helper functions
 function extractVideoId(url) {
   const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([\w-]{11})/);
   return match ? match[1] : null;
@@ -44,9 +59,12 @@ function cleanTranscriptXML(xmlData) {
     .trim();
 }
 
-// ===== ENDPOINTS =====
+// Health check
+app.get('/healthz', (req, res) => {
+  res.json({ ok: true, message: 'YouTube Downloader Online' });
+});
 
-// 1. Obține informații despre video (rapid, fără download)
+// Get video info
 app.post('/api/yt-download', async (req, res) => {
   const { url } = req.body;
   console.log('[SmartDownloader] Procesez URL:', url);
@@ -57,7 +75,6 @@ app.post('/api/yt-download', async (req, res) => {
   if (!videoId) return res.status(400).json({ success: false, error: 'Link invalid' });
 
   try {
-    // Folosim RapidAPI pentru info rapidă
     const response = await axios.get('https://youtube-media-downloader.p.rapidapi.com/v2/video/details', {
       params: { videoId: videoId },
       headers: {
@@ -70,7 +87,6 @@ app.post('/api/yt-download', async (req, res) => {
     const data = response.data;
     if (!data || !data.videos) throw new Error('API-ul nu a returnat date.');
 
-    // Filtrare calități
     const allVideos = data.videos.items;
     let validFormats = allVideos
       .filter(v => v.extension === 'mp4')
@@ -84,7 +100,6 @@ app.post('/api/yt-download', async (req, res) => {
       })
       .filter(v => v.resolution > 0);
 
-    // Eliminăm duplicate
     const uniqueFormats = [];
     const seenResolutions = new Set();
     for (const format of validFormats) {
@@ -97,9 +112,6 @@ app.post('/api/yt-download', async (req, res) => {
 
     if (uniqueFormats.length === 0) throw new Error('Nu am găsit formate video valide.');
 
-    console.log(`[Success] ${uniqueFormats.length} rezoluții: ${uniqueFormats.map(f => f.qualityLabel).join(', ')}`);
-
-    // Transcript
     let transcriptText = null;
     if (data.subtitles && data.subtitles.items && data.subtitles.items.length > 0) {
       const subs = data.subtitles.items;
@@ -137,7 +149,7 @@ app.post('/api/yt-download', async (req, res) => {
   }
 });
 
-// 2. Download video folosind yt-dlp
+// Download video
 app.get('/api/download-video', async (req, res) => {
   const { url, quality, title } = req.query;
 
@@ -153,26 +165,21 @@ app.get('/api/download-video', async (req, res) => {
   console.log(`[Download Start] ${safeTitle} - ${quality}p`);
 
   try {
-    // Format string pentru yt-dlp
     const qualityNum = parseInt(quality) || 720;
     const format = `bestvideo[height<=${qualityNum}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${qualityNum}][ext=mp4]/best`;
-
-    // Comandă yt-dlp optimizată
     const command = `yt-dlp -f "${format}" --merge-output-format mp4 --no-playlist --no-warnings --quiet -o "${filePath}" "${url}"`;
 
     console.log('[Executing]', command);
 
-    // Timeout de 2 minute pentru download
     const { stdout, stderr } = await execPromise(command, {
       timeout: 120000,
-      maxBuffer: 50 * 1024 * 1024 // 50MB buffer
+      maxBuffer: 50 * 1024 * 1024
     });
 
     if (stderr && !stderr.includes('Deleting original file')) {
       console.warn('[yt-dlp warning]:', stderr);
     }
 
-    // Verificăm dacă fișierul există
     if (!fs.existsSync(filePath)) {
       throw new Error('Fișierul nu a fost descărcat.');
     }
@@ -180,7 +187,6 @@ app.get('/api/download-video', async (req, res) => {
     const stats = fs.statSync(filePath);
     console.log(`[Download Complete] Size: ${(stats.size / 1024 / 1024).toFixed(2)}MB`);
 
-    // Trimitem fișierul către client
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp4"`);
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Length', stats.size);
@@ -189,7 +195,6 @@ app.get('/api/download-video', async (req, res) => {
     readStream.pipe(res);
 
     readStream.on('end', () => {
-      // Ștergem fișierul după trimitere
       setTimeout(() => {
         fs.unlink(filePath, (err) => {
           if (err) console.error('[Cleanup Error]:', err);
@@ -209,7 +214,6 @@ app.get('/api/download-video', async (req, res) => {
   } catch (error) {
     console.error('[Download Error]:', error.message);
 
-    // Cleanup în caz de eroare
     if (fs.existsSync(filePath)) {
       fs.unlink(filePath, () => {});
     }
@@ -224,7 +228,15 @@ app.get('/api/download-video', async (req, res) => {
   }
 });
 
-// 3. Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'online', message: 'Server funcțional!' });
+// Start server
+app.listen(PORT, () => {
+  console.log(`✅ YouTube Downloader pornit pe portul ${PORT}`);
+  
+  exec('yt-dlp --version', (error, stdout) => {
+    if (error) {
+      console.warn('⚠️  yt-dlp NU este instalat!');
+    } else {
+      console.log(`✅ yt-dlp versiunea: ${stdout.trim()}`);
+    }
+  });
 });
