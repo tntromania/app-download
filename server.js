@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -8,47 +9,77 @@ const execPromise = util.promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(express.json());
-app.use(express.static('public')); // dacă ai folder public/
+// ============================================
+// CONFIGURARE CORS - FOARTE IMPORTANT!
+// ============================================
+app.use(cors({
+    origin: [
+        'https://smartcreator.ro',
+        'https://www.smartcreator.ro',
+        'http://localhost:3000',
+        'http://localhost:5500'
+    ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
 
-// Cookies path
+// Middleware standard
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Servește fișiere statice (dacă ai)
+// app.use(express.static('public'));
+
+// ============================================
+// COOKIES YOUTUBE
+// ============================================
 const COOKIES_FILE = path.join(__dirname, 'youtube_cookies.txt');
 
-// Verifică cookies la startup
 if (fs.existsSync(COOKIES_FILE)) {
     console.log('✅ YouTube cookies găsite!');
 } else {
     console.warn('⚠️ ATENȚIE: youtube_cookies.txt NU există!');
 }
 
-// Endpoint pentru info video
+// ============================================
+// ENDPOINT: GET VIDEO INFO
+// ============================================
 app.post('/api/yt-download', async (req, res) => {
     try {
         const { url } = req.body;
         
         if (!url) {
-            return res.status(400).json({ success: false, error: 'URL lipsă' });
+            return res.status(400).json({ 
+                success: false, 
+                error: 'URL lipsă' 
+            });
         }
         
-        // Construiește comanda pentru info
+        console.log('📥 Getting info for:', url);
+        
+        // Construiește comanda
         let command = 'yt-dlp ';
         
+        // COOKIES
         if (fs.existsSync(COOKIES_FILE)) {
             command += `--cookies "${COOKIES_FILE}" `;
         }
         
+        // CLIENT MWEB
         command += '--extractor-args "youtube:player_client=mweb" ';
+        
+        // DUMP JSON
         command += '--dump-json ';
         command += '--no-warnings ';
         command += `"${url}"`;
         
-        console.log('Getting video info...');
+        console.log('Executing:', command);
         
         const { stdout } = await execPromise(command);
         const videoInfo = JSON.parse(stdout);
         
-        // Filtrează formate (doar video+audio, MP4)
+        // Filtrează formate
         const formats = videoInfo.formats
             .filter(f => f.vcodec !== 'none' && f.acodec !== 'none')
             .filter(f => f.ext === 'mp4')
@@ -61,17 +92,20 @@ app.post('/api/yt-download', async (req, res) => {
             }))
             .sort((a, b) => b.resolution - a.resolution);
         
+        console.log('✅ Found formats:', formats.length);
+        
         res.json({
             success: true,
             title: videoInfo.title,
             thumbnail: videoInfo.thumbnail,
             duration: videoInfo.duration_string,
             formats: formats,
-            videoUrl: url
+            videoUrl: url,
+            transcript: null // sau extrage transcript dacă vrei
         });
         
     } catch (error) {
-        console.error('Error:', error);
+        console.error('❌ Error:', error);
         res.status(500).json({ 
             success: false, 
             error: error.message 
@@ -79,7 +113,9 @@ app.post('/api/yt-download', async (req, res) => {
     }
 });
 
-// Endpoint pentru download
+// ============================================
+// ENDPOINT: DOWNLOAD VIDEO
+// ============================================
 app.get('/api/download-video', async (req, res) => {
     try {
         const { url, quality, title } = req.query;
@@ -87,6 +123,8 @@ app.get('/api/download-video', async (req, res) => {
         if (!url) {
             return res.status(400).json({ error: 'URL lipsă' });
         }
+        
+        console.log('📥 Downloading:', url, 'Quality:', quality);
         
         // Construiește comanda
         let command = 'yt-dlp ';
@@ -123,8 +161,7 @@ app.get('/api/download-video', async (req, res) => {
         // URL
         command += `"${url}"`;
         
-        console.log('Downloading video...');
-        console.log('Command:', command);
+        console.log('Executing download...');
         
         // Execută
         await execPromise(command);
@@ -133,6 +170,8 @@ app.get('/api/download-video', async (req, res) => {
         if (!fs.existsSync(outputPath)) {
             throw new Error('Fișierul nu a fost creat');
         }
+        
+        console.log('✅ Download complete!');
         
         // Trimite fișierul
         const downloadName = `${title || 'video'}.mp4`;
@@ -143,18 +182,21 @@ app.get('/api/download-video', async (req, res) => {
             // Cleanup
             try {
                 fs.unlinkSync(outputPath);
+                console.log('🗑️ Cleanup done');
             } catch (e) {
                 console.error('Cleanup error:', e);
             }
         });
         
     } catch (error) {
-        console.error('Error:', error);
+        console.error('❌ Error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Debug endpoint
+// ============================================
+// DEBUG ENDPOINTS
+// ============================================
 app.get('/debug/cookies', (req, res) => {
     res.json({
         cookiesExist: fs.existsSync(COOKIES_FILE),
@@ -163,8 +205,18 @@ app.get('/debug/cookies', (req, res) => {
     });
 });
 
-// Start server
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        cookies: fs.existsSync(COOKIES_FILE)
+    });
+});
+
+// ============================================
+// START SERVER
+// ============================================
 app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📁 Cookies: ${fs.existsSync(COOKIES_FILE) ? '✅' : '❌'}`);
+    console.log('🚀 Server running on port', PORT);
+    console.log('📁 Cookies:', fs.existsSync(COOKIES_FILE) ? '✅' : '❌');
 });
